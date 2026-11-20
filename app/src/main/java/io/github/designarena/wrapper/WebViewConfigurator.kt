@@ -33,7 +33,22 @@ object WebViewConfigurator {
             settings.safeBrowsingEnabled = true
         }
 
-        // Responsive viewport without clunky zoom overlays.
+        // Google sign-in fix: present a Chrome user-agent, not a WebView one.
+        // Android WebViews tag their default UA with "; wv", and Google refuses
+        // OAuth sign-in from embedded WebViews with "403: disallowed_useragent"
+        // when it sees that marker. DesignArena signs in with Google Identity
+        // Services, which opens accounts.google.com in a popup, so the marker
+        // alone was enough to break "Continue with Google" outright.
+        // Removing only the "; wv" marker keeps the real Chrome version and
+        // device tokens; it does not fake another browser. Trade-off (see
+        // README): Google discourages OAuth inside WebViews and can detect
+        // embedded browsers by other means, so this is a pragmatic fix for a
+        // personal wrapper, not a guarantee. The alternative — Custom Tabs —
+        // cannot log this app in, because its cookies live in Chrome, not in
+        // this WebView, and DesignArena offers no token-exchange return path.
+        settings.userAgentString = settings.userAgentString
+            .replace("; wv", "")
+            .replace(" wv", "")
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
         settings.setSupportZoom(false)

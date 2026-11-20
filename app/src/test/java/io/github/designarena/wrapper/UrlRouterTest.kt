@@ -22,17 +22,21 @@ class UrlRouterTest {
     }
 
     @Test
-    fun routesOAuthProvidersToCustomTabs() {
+    fun routesOAuthProvidersInWebView() {
+        // OAuth stays in the WebView so its session cookie lands in the same
+        // cookie jar the app uses. A Custom Tab would set the cookie in
+        // Chrome instead, and DesignArena has no deep-link / token-exchange
+        // return path, so a Custom Tab login could never log the app in.
         assertEquals(
-            RouteDecision.OpenCustomTab,
+            RouteDecision.LoadInWebView,
             UrlRouter.route("https://accounts.google.com/o/oauth2/v2/auth")
         )
         assertEquals(
-            RouteDecision.OpenCustomTab,
+            RouteDecision.LoadInWebView,
             UrlRouter.route("https://github.com/login/oauth/authorize")
         )
         assertEquals(
-            RouteDecision.OpenCustomTab,
+            RouteDecision.LoadInWebView,
             UrlRouter.route("https://appleid.apple.com/auth/authorize")
         )
     }

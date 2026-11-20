@@ -20,6 +20,18 @@ sealed interface RouteDecision {
 /**
  * Pure-Kotlin URL allowlist and OAuth routing rules.
  * Kept free of Android framework types so it can be verified with fast JVM unit tests.
+ *
+ * OAuth note: providers are loaded INSIDE the WebView, not in Chrome Custom Tabs.
+ * That is deliberate, and the reason is session continuity, not convenience:
+ * Custom Tabs run in Chrome with Chrome's cookie jar, while this app's session
+ * lives in the WebView's cookie jar. DesignArena has no deep-link / token-exchange
+ * return path (no intent-filter, no server-side code exchange the app can call),
+ * so a Google sign-in completed in a Custom Tab would set its session cookie in
+ * Chrome and the app WebView would still be logged out when the user came back.
+ * Keeping the whole OAuth flow in the one WebView keeps the session cookie where
+ * the app can use it. The trade-off is documented in the README: Google
+ * discourages OAuth inside embedded WebViews, so this relies on the WebView
+ * presenting a Chrome user-agent (see WebViewConfigurator).
  */
 object UrlRouter {
 
@@ -55,7 +67,10 @@ object UrlRouter {
         if (host.isEmpty()) return RouteDecision.Block
 
         if (isOAuthHost(host)) {
-            return RouteDecision.OpenCustomTab
+            // OAuth must stay in the WebView so its session cookie lands in the
+            // same cookie jar the app uses (see class doc). External links below
+            // still go to Custom Tabs.
+            return RouteDecision.LoadInWebView
         }
 
         return if (isAllowedWebViewHost(host)) {

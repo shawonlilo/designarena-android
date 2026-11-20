@@ -208,25 +208,17 @@ class MainActivity : AppCompatActivity() {
                 isUserGesture: Boolean,
                 resultMsg: Message?
             ): Boolean {
+                // Google sign-in fix: DesignArena uses Google Identity Services,
+                // which opens accounts.google.com with window.open(). The old
+                // code handed that popup to a bare WebView with default
+                // settings — JavaScript off, DOM storage off, and a stock
+                // WebView user-agent — so Google's sign-in page could not run
+                // there at all. A popup WebView must be configured exactly
+                // like the main one, and its first load must be routed the
+                // same way: shouldOverrideUrlLoading never fires for the
+                // initial popup URL, so onPageStarted catches it.
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-                val tempWebView = WebView(this@MainActivity).apply {
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            popupView: WebView,
-                            request: WebResourceRequest
-                        ): Boolean {
-                            val url = request.url.toString()
-                            if (UrlRouter.route(url) == RouteDecision.LoadInWebView) {
-                                webView.loadUrl(url)
-                            } else {
-                                handleNavigation(url)
-                            }
-                            popupView.destroy()
-                            return true
-                        }
-                    }
-                }
-                transport.webView = tempWebView
+                transport.webView = createPopupWebView()
                 resultMsg.sendToTarget()
                 return true
             }
@@ -246,6 +238,67 @@ class MainActivity : AppCompatActivity() {
             }
             RouteDecision.Block -> true
         }
+    }
+
+    /**
+     * Popup window used by window.open() flows such as Google Identity
+     * Services sign-in. Configured exactly like the main WebView (same
+     * JavaScript, storage, cookies and Chrome user-agent) so OAuth pages
+     * can actually run inside it, and every navigation it starts is routed
+     * through [handlePopupNavigation] instead of loading unseen in the popup.
+     */
+    private fun createPopupWebView(): WebView {
+        val popupView = WebView(this)
+        WebViewConfigurator.configure(popupView)
+        popupView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                // The popup's first URL never goes through
+                // shouldOverrideUrlLoading, so intercept it here.
+                handlePopupNavigation(view, url)
+            }
+
+            override fun shouldOverrideUrlLoading(popupView: WebView, request: WebResourceRequest): Boolean {
+                return handlePopupNavigation(popupView, request.url.toString())
+            }
+        }
+        popupView.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                transport.webView = createPopupWebView()
+                resultMsg.sendToTarget()
+                return true
+            }
+        }
+        return popupView
+    }
+
+    /**
+     * Routes one popup navigation, then closes the popup. OAuth and
+     * DesignArena URLs load in the main WebView so the sign-in session
+     * cookie lands in the app's cookie jar; anything else goes through the
+     * normal navigation handler (Custom Tab / external intent / blocked).
+     * Returns true because the popup itself never handles the URL.
+     */
+    private fun handlePopupNavigation(popupView: WebView, url: String): Boolean {
+        // A fresh popup reports about:blank before its real URL loads.
+        // Ignore it so the popup survives until Google's URL arrives.
+        if (url.isBlank() || url == "about:blank") return true
+        if (UrlRouter.route(url) == RouteDecision.LoadInWebView) {
+            webView.loadUrl(url)
+        } else {
+            handleNavigation(url)
+        }
+        runCatching {
+            popupView.stopLoading()
+            popupView.destroy()
+        }
+        return true
     }
 
     private fun openCustomTab(url: String) {
