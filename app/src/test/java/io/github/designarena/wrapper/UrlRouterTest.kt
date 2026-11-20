@@ -39,6 +39,14 @@ class UrlRouterTest {
             RouteDecision.LoadInWebView,
             UrlRouter.route("https://appleid.apple.com/auth/authorize")
         )
+        // Firebase Auth's sign-in handler: DesignArena signs in with
+        // Firebase signInWithPopup, so the Google flow runs through this
+        // page. It must stay in a WebView — the handler posts the result to
+        // window.opener, and a Custom Tab has no opener to deliver it to.
+        assertEquals(
+            RouteDecision.LoadInWebView,
+            UrlRouter.route("https://designarena-a90c9.firebaseapp.com/__/auth/handler?authType=signInViaPopup&providerId=google.com")
+        )
     }
 
     @Test

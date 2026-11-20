@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Message
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -29,12 +30,19 @@ import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var rootContainer: View
+    private lateinit var rootContainer: ViewGroup
     private lateinit var webView: WebView
     private lateinit var progressBar: LinearProgressIndicator
     private lateinit var offlineOverlay: View
     private lateinit var downloadBridge: DownloadBridge
     private lateinit var networkMonitor: NetworkMonitor
+
+    // Visible sign-in popup (window.open), e.g. Firebase Auth + Google.
+    // Kept as a real popup with its opener relationship intact: the Firebase
+    // handler delivers the sign-in result to window.opener with postMessage,
+    // so destroying or forwarding the popup strands the login. Null when no
+    // popup is open.
+    private var popupWebView: WebView? = null
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var lastFailedUrl: String? = null
@@ -208,17 +216,27 @@ class MainActivity : AppCompatActivity() {
                 isUserGesture: Boolean,
                 resultMsg: Message?
             ): Boolean {
-                // Google sign-in fix: DesignArena uses Google Identity Services,
-                // which opens accounts.google.com with window.open(). The old
-                // code handed that popup to a bare WebView with default
-                // settings — JavaScript off, DOM storage off, and a stock
-                // WebView user-agent — so Google's sign-in page could not run
-                // there at all. A popup WebView must be configured exactly
-                // like the main one, and its first load must be routed the
-                // same way: shouldOverrideUrlLoading never fires for the
-                // initial popup URL, so onPageStarted catches it.
+                // Google sign-in fix: DesignArena uses Firebase signInWithPopup,
+                // which opens the Firebase Auth handler in a window.open()
+                // popup, and the handler posts the result back to window.opener.
+                // The popup must therefore be a REAL, VISIBLE popup: configured
+                // like the main WebView, added to the view hierarchy so the
+                // user can actually tap through Google sign-in, and kept alive
+                // for the whole auth flow. Forwarding it to a Custom Tab or
+                // the main WebView destroys window.opener, and the handler
+                // then has nowhere to deliver the login — the user just sees
+                // the handler URL redirecting with no sign-in.
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-                transport.webView = createPopupWebView()
+                val popup = createPopupWebView()
+                popupWebView = popup
+                rootContainer.addView(
+                    popup,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                transport.webView = popup
                 resultMsg.sendToTarget()
                 return true
             }
@@ -241,11 +259,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Popup window used by window.open() flows such as Google Identity
-     * Services sign-in. Configured exactly like the main WebView (same
-     * JavaScript, storage, cookies and Chrome user-agent) so OAuth pages
-     * can actually run inside it, and every navigation it starts is routed
-     * through [handlePopupNavigation] instead of loading unseen in the popup.
+     * Popup window used by window.open() flows such as Firebase Auth +
+     * Google sign-in. Configured exactly like the main WebView (same
+     * JavaScript, storage, cookies and Chrome user-agent) so the Firebase
+     * handler and Google's sign-in page can actually run inside it.
+     * The popup stays on screen for the whole auth flow and closes itself
+     * (via window.close(), handled in onCloseWindow) once the handler has
+     * posted the result back to the main WebView.
      */
     private fun createPopupWebView(): WebView {
         val popupView = WebView(this)
@@ -254,7 +274,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 // The popup's first URL never goes through
-                // shouldOverrideUrlLoading, so intercept it here.
+                // shouldOverrideUrlLoading, so non-auth URLs are caught here.
                 handlePopupNavigation(view, url)
             }
 
@@ -270,35 +290,57 @@ class MainActivity : AppCompatActivity() {
                 resultMsg: Message?
             ): Boolean {
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-                transport.webView = createPopupWebView()
+                val nested = createPopupWebView()
+                popupWebView = nested
+                rootContainer.addView(
+                    nested,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                transport.webView = nested
                 resultMsg.sendToTarget()
                 return true
+            }
+
+            override fun onCloseWindow(view: WebView) {
+                // Firebase handler calls window.close() after posting the
+                // sign-in result to the opener.
+                closePopupWebView()
             }
         }
         return popupView
     }
 
     /**
-     * Routes one popup navigation, then closes the popup. OAuth and
-     * DesignArena URLs load in the main WebView so the sign-in session
-     * cookie lands in the app's cookie jar; anything else goes through the
-     * normal navigation handler (Custom Tab / external intent / blocked).
-     * Returns true because the popup itself never handles the URL.
+     * Routes one popup navigation. Auth URLs (DesignArena, OAuth hosts,
+     * Firebase Auth handler) load INSIDE the popup so window.opener stays
+     * intact and the handler can post the result back to the main WebView —
+     * return false to let the popup load them. Anything else is handed off
+     * through the normal navigation handler (Custom Tab / external intent /
+     * blocked) and the popup is closed. Returns true when the popup must
+     * not load the URL itself.
      */
     private fun handlePopupNavigation(popupView: WebView, url: String): Boolean {
         // A fresh popup reports about:blank before its real URL loads.
-        // Ignore it so the popup survives until Google's URL arrives.
         if (url.isBlank() || url == "about:blank") return true
         if (UrlRouter.route(url) == RouteDecision.LoadInWebView) {
-            webView.loadUrl(url)
-        } else {
-            handleNavigation(url)
+            return false
         }
-        runCatching {
-            popupView.stopLoading()
-            popupView.destroy()
-        }
+        handleNavigation(url)
+        closePopupWebView()
         return true
+    }
+
+    private fun closePopupWebView() {
+        val popup = popupWebView ?: return
+        popupWebView = null
+        runCatching {
+            rootContainer.removeView(popup)
+            popup.stopLoading()
+            popup.destroy()
+        }
     }
 
     private fun openCustomTab(url: String) {
@@ -326,7 +368,11 @@ class MainActivity : AppCompatActivity() {
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    if (webView.canGoBack()) {
+                    // A visible sign-in popup closes first; only then does
+                    // Back navigate the main WebView.
+                    if (popupWebView != null) {
+                        closePopupWebView()
+                    } else if (webView.canGoBack()) {
                         webView.goBack()
                     } else {
                         isEnabled = false
@@ -415,6 +461,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         filePathCallback?.onReceiveValue(null)
         filePathCallback = null
+        closePopupWebView()
         webView.destroy()
         super.onDestroy()
     }

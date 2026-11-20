@@ -42,7 +42,15 @@ object UrlRouter {
         "appleid.apple.com",
         "login.microsoftonline.com",
         "github.com",
-        "auth0.com"
+        "auth0.com",
+        // Firebase Auth's sign-in handler (https://<project>.firebaseapp.com/__/auth/handler).
+        // DesignArena signs in with Firebase signInWithPopup, so the whole
+        // Google flow runs through this handler page. It must stay in a
+        // WebView: the handler delivers the result to the opener window with
+        // postMessage and only works when window.opener exists, so sending it
+        // to a Custom Tab (no opener) strands the login mid-redirect — which
+        // is exactly what the user saw: the handler URL loading with no login.
+        "firebaseapp.com"
     )
 
     private val EXTERNAL_INTENT_SCHEMES = setOf("mailto", "tel")
